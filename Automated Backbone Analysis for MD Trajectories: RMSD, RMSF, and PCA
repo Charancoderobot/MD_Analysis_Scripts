@@ -1,0 +1,102 @@
+#!/bin/bash
+# Full end-to-end Backbone Analysis Script
+# Works on full-system files and produces backbone-only analysis outputs
+# Files required in current directory: md_prod.tpr, md_prod.xtc, topol.top, md_prod_centered.xtc, prot_ref.pdb
+
+set -euo pipefail
+
+# === Full-system files ===
+FULL_TPR="md_prod.tpr"
+FULL_XTC="md_prod.xtc"
+TOPOL="topol.top"
+
+# === Backbone-only output files ===
+BB_TPR="md_prod_fit_backbone.tpr"
+BB_XTC="md_prod_fit.xtc"
+REF_PDB="prot_ref.pdb"
+
+# Analysis output
+RMSD_OUT="rmsd_backbone.xvg"
+RMSF_OUT="rmsf_residue.xvg"
+EIGVAL_OUT="eigenval.xvg"
+EIGVEC_OUT="eigenvec.trr"
+PC_PROJ_OUT="pc_proj.xvg"
+
+# === Step 0: Create a temporary directory ===
+WORKDIR="Backbone_Analysis_Work"
+mkdir -p "$WORKDIR"
+cd "$WORKDIR"
+
+echo "Step 0: Centering full-system trajectory..."
+gmx trjconv -s "../$FULL_TPR" -f "../$FULL_XTC" -o md_prod_centered.xtc -center << EOF
+System
+Protein
+EOF
+FULL_XTC="md_prod_centered.xtc"  # update variable for next steps
+
+# === Step 1: Generate backbone index file (if not exists) ===
+if [ ! -f index.ndx ]; then
+    echo "Generating backbone index..."
+    gmx make_ndx -f "../$FULL_TPR" -o index.ndx << EOF
+Backbone
+q
+EOF
+fi
+
+# === Step 2: Generate backbone-only TPR ===
+echo "Generating backbone-only TPR..."
+gmx convert-tpr -s "../$FULL_TPR" -n index.ndx -o "$BB_TPR" << EOF
+Backbone
+EOF
+
+# === Step 3: Extract backbone-only trajectory ===
+echo "Extracting backbone-only trajectory..."
+gmx trjconv -s "$BB_TPR" -f "../$FULL_XTC" -o "$BB_XTC" << EOF
+Backbone
+Backbone
+EOF
+
+# === Step 4: Dump first frame as reference PDB ===
+echo "Extracting reference PDB..."
+gmx trjconv -s "$BB_TPR" -f "$BB_XTC" -o "$REF_PDB" -dump 0 << EOF
+Backbone
+EOF
+
+# === Step 5: Fit trajectory to backbone reference ===
+echo "Fitting trajectory to backbone reference..."
+gmx trjconv -s "$BB_TPR" -f "$BB_XTC" -o fit.xtc -fit rot+trans << EOF
+Backbone
+Backbone
+EOF
+
+# === Step 6: RMSD ===
+echo "Calculating RMSD..."
+gmx rms -s "$BB_TPR" -f fit.xtc -o "$RMSD_OUT" << EOF
+Backbone
+Backbone
+EOF
+
+# === Step 7: RMSF ===
+echo "Calculating RMSF..."
+gmx rmsf -s "$BB_TPR" -f fit.xtc -o "$RMSF_OUT" -res << EOF
+Backbone
+Backbone
+EOF
+
+# === Step 8: PCA (Covariance + Projection) ===
+echo "Calculating covariance matrix..."
+gmx covar -s "$BB_TPR" -f fit.xtc -o "$EIGVAL_OUT" -v "$EIGVEC_OUT" << EOF
+Backbone
+Backbone
+EOF
+
+echo "Projecting trajectory onto principal components..."
+gmx anaeig -v "$EIGVEC_OUT" -f fit.xtc -s "$BB_TPR" -proj "$PC_PROJ_OUT" << EOF
+Backbone
+Backbone
+EOF
+
+echo "Backbone analysis complete!"
+echo "Generated files in $WORKDIR:"
+echo "  $BB_TPR, $BB_XTC, $REF_PDB"
+echo "  $RMSD_OUT, $RMSF_OUT, $EIGVAL_OUT, $EIGVEC_OUT, $PC_PROJ_OUT"
